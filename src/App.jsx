@@ -17,6 +17,11 @@ import {
   where, doc, updateDoc, orderBy, setDoc, getDoc 
 } from 'firebase/firestore';
 
+// IMPORT LIBRARY PDF & QR LANGSUNG KE DALAM SISTEM
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
+import QRious from 'qrious';
+
 // --- CONFIGURATION SWITCH ---
 // Set to TRUE to use actual Firebase backend. Set to FALSE for purely local Offline/Demo mode.
 const USE_FIREBASE = false; 
@@ -443,27 +448,13 @@ export default function App() {
   // --- EFFECTS ---
 
   useEffect(() => {
-    const loadScript = (id, src) => {
-      if (!document.getElementById(id)) {
-        const script = document.createElement('script');
-        script.id = id;
-        script.src = src;
-        script.async = true;
-        document.body.appendChild(script);
-      }
-    }
-    loadScript('jspdf-script', "[https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js](https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js)");
-    loadScript('jspdf-autotable', "[https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js](https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js)"); // Added autoTable
-    loadScript('qrious-script', "[https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js](https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js)");
-
-    // Load Global Settings
+    // Load Global Settings Firebase
     if (USE_FIREBASE && db) {
       const fetchGlobalParams = async () => {
         try {
           const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global');
           const docSnap = await getDoc(docRef);
           if (docSnap.exists()) {
-             // Merge with defaults to ensure courseTypes exists if old data doesn't have it
              setGlobalParams({ ...globalParams, ...docSnap.data() });
           }
         } catch (e) {
@@ -643,7 +634,6 @@ export default function App() {
     });
   };
 
-  // Helper to handle checkbox toggle
   const toggleComponent = (id) => {
     const newSet = new Set(selectedComponents);
     if (newSet.has(id)) newSet.delete(id);
@@ -651,7 +641,6 @@ export default function App() {
     setSelectedComponents(newSet);
   };
 
-  // Helper to Select All in Current Tab
   const selectAllInTab = (tabName) => {
      const newSet = new Set(selectedComponents);
      
@@ -941,250 +930,247 @@ export default function App() {
     }
   };
 
+  // UPDATE: Generate PDF menggunakan library lokal
   const generatePDF = async (item, preview = false) => {
-    if (!window.jspdf || !window.QRious) {
-      alert("PDF/QR libraries are still loading. Please try again.");
-      return;
-    }
+    try {
+      const data = item || {
+        courseName, courseCode, courseType, numPB,
+        pricingResult, 
+        lecturerName: lecturerName || userData?.name, 
+        courseSks, 
+        selectedComponents: Array.from(selectedComponents) 
+      };
+      
+      const selectedSet = new Set(data.selectedComponents);
+      
+      // Create Doc ID for validation
+      const docId = item?.id || 'DRAFT-' + Date.now();
+      const verificationUrl = `https://celoe-platform.web.app/verify/${docId}`; 
 
-    const { jsPDF } = window.jspdf;
-    const QRious = window.QRious; 
+      if (!preview && item && !item.isPrinted && USE_FIREBASE) {
+          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'calculations', item.id), { isPrinted: true });
+          loadHistory(); 
+      } else if (!preview && item && !item.isPrinted && !USE_FIREBASE) {
+          setHistoryList(prev => prev.map(h => h.id === item.id ? { ...h, isPrinted: true } : h));
+          alert('Document Locked (Offline Mode)');
+      }
 
-    const data = item || {
-      courseName, courseCode, courseType, numPB,
-      pricingResult, 
-      lecturerName: lecturerName || userData?.name, // Use current state or user data
-      courseSks, // Use current state
-      selectedComponents: Array.from(selectedComponents) // Ensure array
-    };
-    
-    const selectedSet = new Set(data.selectedComponents);
-    
-    // Create Doc ID for validation
-    const docId = item?.id || 'DRAFT-' + Date.now();
-    const verificationUrl = `https://celoe-platform.web.app/verify/${docId}`; 
+      // GENERATE QR CODE IMAGE (BASE64)
+      const qr = new QRious({
+        value: verificationUrl,
+        size: 200 
+      });
+      const qrDataUrl = qr.toDataURL();
 
-    if (!preview && item && !item.isPrinted && USE_FIREBASE) {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'calculations', item.id), { isPrinted: true });
-        loadHistory(); 
-    } else if (!preview && item && !item.isPrinted && !USE_FIREBASE) {
-        setHistoryList(prev => prev.map(h => h.id === item.id ? { ...h, isPrinted: true } : h));
-        alert('Document Locked (Offline Mode)');
-    }
+      const docPdf = new jsPDF();
+      
+      // --- PAGE 1: ESTIMATION ---
+      docPdf.setFillColor(153, 27, 27); 
+      docPdf.rect(0, 0, 210, 40, 'F');
+      docPdf.setTextColor(255, 255, 255);
+      docPdf.setFontSize(22);
+      docPdf.setFont("helvetica", "bold");
+      docPdf.text("CeLOE Pricing Document", 15, 25);
+      docPdf.setFontSize(10);
+      docPdf.setFont("helvetica", "normal");
+      docPdf.text("Official Estimate & Validation", 15, 32);
 
-    // GENERATE QR CODE IMAGE (BASE64)
-    const qr = new QRious({
-      value: verificationUrl,
-      size: 200 
-    });
-    const qrDataUrl = qr.toDataURL();
-
-    const docPdf = new jsPDF();
-    
-    // --- PAGE 1: ESTIMATION ---
-    docPdf.setFillColor(153, 27, 27); 
-    docPdf.rect(0, 0, 210, 40, 'F');
-    docPdf.setTextColor(255, 255, 255);
-    docPdf.setFontSize(22);
-    docPdf.setFont("helvetica", "bold");
-    docPdf.text("CeLOE Pricing Document", 15, 25);
-    docPdf.setFontSize(10);
-    docPdf.setFont("helvetica", "normal");
-    docPdf.text("Official Estimate & Validation", 15, 32);
-
-    let y = 55;
-    docPdf.setTextColor(0,0,0);
-    docPdf.setFontSize(12);
-    
-    docPdf.text(`Course Name : ${data.courseName}`, 15, y);
-    docPdf.text(`Course Code : ${data.courseCode || '-'}`, 150, y, { align: 'right' });
-    y+=8;
-    docPdf.setFontSize(10);
-    docPdf.setTextColor(100,100,100);
-    
-    // Enhanced Info
-    docPdf.text(`Lecturer : ${data.lecturerName || 'Unknown'}`, 15, y);
-    docPdf.text(`SKS : ${data.courseSks || '-'}`, 15, y+6);
-    docPdf.text(`Date : ${new Date().toLocaleDateString()}`, 150, y, { align: 'right' });
-    
-    y+=15;
-    docPdf.setDrawColor(200);
-    docPdf.line(15, y, 195, y);
-    y+=10;
-
-    docPdf.setTextColor(0,0,0);
-    docPdf.setFontSize(12);
-    docPdf.setFont("helvetica", "bold");
-    docPdf.text("Configuration", 15, y);
-    y+=8;
-    docPdf.setFont("helvetica", "normal");
-    docPdf.setFontSize(10);
-    const typeName = globalParams.courseTypes.find(t=>t.id===data.courseType)?.name || data.courseType;
-    docPdf.text(`Type : ${typeName}`, 15, y);
-    docPdf.text(`Multiplier : ${data.pricingResult.rawPrice/data.pricingResult.lecturerBase < 1 ? '1.0x' : 'Wait'}`, 130, y); 
-    y+=6;
-    docPdf.text(`Modules : ${data.numPB} PB`, 15, y);
-    docPdf.text(`Completeness : ${data.pricingResult.completenessScore}%`, 130, y);
-
-    y+=15;
-    docPdf.setFont("helvetica", "bold");
-    docPdf.setFontSize(12);
-    docPdf.text("Financial Breakdown", 15, y);
-    y+=10;
-
-    const row = (label, val, bold=false) => {
-      docPdf.setFont("helvetica", bold ? "bold" : "normal");
-      docPdf.text(label, 15, y);
-      docPdf.text(formatCurrency(val), 190, y, { align: 'right' });
+      let y = 55;
+      docPdf.setTextColor(0,0,0);
+      docPdf.setFontSize(12);
+      
+      docPdf.text(`Course Name : ${data.courseName}`, 15, y);
+      docPdf.text(`Course Code : ${data.courseCode || '-'}`, 150, y, { align: 'right' });
       y+=8;
-    };
+      docPdf.setFontSize(10);
+      docPdf.setTextColor(100,100,100);
+      
+      // Enhanced Info
+      docPdf.text(`Lecturer : ${data.lecturerName || 'Unknown'}`, 15, y);
+      docPdf.text(`SKS : ${data.courseSks || '-'}`, 15, y+6);
+      docPdf.text(`Date : ${new Date().toLocaleDateString()}`, 150, y, { align: 'right' });
+      
+      y+=15;
+      docPdf.setDrawColor(200);
+      docPdf.line(15, y, 195, y);
+      y+=10;
 
-    row("Base Calculation", data.pricingResult.rawPrice);
-    row("Quality Adjustment", data.pricingResult.maxPotentialValue - (data.pricingResult.maxPotentialValue * (data.pricingResult.completenessScore/100))); 
-    y+=2;
-    docPdf.line(15, y-6, 195, y-6);
-    
-    row("Lecturer Revenue", data.pricingResult.lecturerBase, true);
-    row("Platform Fee", data.pricingResult.platformFee);
-    
-    y+=5;
-    docPdf.setFillColor(240, 240, 240);
-    docPdf.rect(15, y-5, 180, 15, 'F');
-    docPdf.setTextColor(185, 28, 28);
-    docPdf.setFontSize(14);
-    docPdf.text("Final Enrollment Price", 20, y+5);
-    docPdf.text(formatCurrency(data.pricingResult.finalPrice), 190, y+5, { align: 'right' });
+      docPdf.setTextColor(0,0,0);
+      docPdf.setFontSize(12);
+      docPdf.setFont("helvetica", "bold");
+      docPdf.text("Configuration", 15, y);
+      y+=8;
+      docPdf.setFont("helvetica", "normal");
+      docPdf.setFontSize(10);
+      const typeName = globalParams.courseTypes.find(t=>t.id===data.courseType)?.name || data.courseType;
+      docPdf.text(`Type : ${typeName}`, 15, y);
+      docPdf.text(`Multiplier : ${data.pricingResult.rawPrice/data.pricingResult.lecturerBase < 1 ? '1.0x' : 'Wait'}`, 130, y); 
+      y+=6;
+      docPdf.text(`Modules : ${data.numPB} PB`, 15, y);
+      docPdf.text(`Completeness : ${data.pricingResult.completenessScore}%`, 130, y);
 
-    // --- QR CODE ON PAGE 1 ---
-    let qrY = 230; 
-    docPdf.addImage(qrDataUrl, 'JPEG', 160, qrY, 30, 30);
-    docPdf.setFontSize(8);
-    docPdf.setTextColor(150, 150, 150);
-    docPdf.text("Scan to Verify Originality", 175, qrY+35, { align: 'center' });
-    docPdf.text(`ID: ${docId.substring(0, 15)}...`, 175, qrY+39, { align: 'center' });
+      y+=15;
+      docPdf.setFont("helvetica", "bold");
+      docPdf.setFontSize(12);
+      docPdf.text("Financial Breakdown", 15, y);
+      y+=10;
 
-    // --- PAGE 2: CHECKLIST (FIXED LAYOUT) ---
-    docPdf.addPage();
-    docPdf.setFillColor(255, 255, 255);
-    docPdf.setTextColor(0, 0, 0);
-    docPdf.setFontSize(14);
-    docPdf.setFont("helvetica", "bold");
-    docPdf.text("Detailed Component Checklist", 15, 20);
+      const row = (label, val, bold=false) => {
+        docPdf.setFont("helvetica", bold ? "bold" : "normal");
+        docPdf.text(label, 15, y);
+        docPdf.text(formatCurrency(val), 190, y, { align: 'right' });
+        y+=8;
+      };
 
-    y = 35;
-    docPdf.setFontSize(10);
-    docPdf.setFont("helvetica", "bold");
-    docPdf.text("1. Profile Components", 15, y);
-    y += 10; // Extra spacing after header
-    docPdf.setFont("helvetica", "normal");
-    
-    // Draw Profile Items - FIXED 2 COLUMN LOOP
-    const profileItems = COMPONENT_GROUPS.profile.items;
-    for (let i = 0; i < profileItems.length; i++) {
-        const item = profileItems[i];
-        const isChecked = selectedSet.has(item.id);
-        const xPos = (i % 2 === 0) ? 15 : 110; 
-        
-        // Checkbox container
-        docPdf.setDrawColor(200);
-        docPdf.setFillColor(255, 255, 255);
-        docPdf.rect(xPos, y-3.5, 5, 5, 'FD'); // Empty box background
+      row("Base Calculation", data.pricingResult.rawPrice);
+      row("Quality Adjustment", data.pricingResult.maxPotentialValue - (data.pricingResult.maxPotentialValue * (data.pricingResult.completenessScore/100))); 
+      y+=2;
+      docPdf.line(15, y-6, 195, y-6);
+      
+      row("Lecturer Revenue", data.pricingResult.lecturerBase, true);
+      row("Platform Fee", data.pricingResult.platformFee);
+      
+      y+=5;
+      docPdf.setFillColor(240, 240, 240);
+      docPdf.rect(15, y-5, 180, 15, 'F');
+      docPdf.setTextColor(185, 28, 28);
+      docPdf.setFontSize(14);
+      docPdf.text("Final Enrollment Price", 20, y+5);
+      docPdf.text(formatCurrency(data.pricingResult.finalPrice), 190, y+5, { align: 'right' });
 
-        if(isChecked) {
-            // Draw Green Checkmark
-            docPdf.setDrawColor(0, 153, 51); // Green
-            docPdf.setLineWidth(1);
-            // Tick coordinates relative to box
-            docPdf.line(xPos + 1, y - 1, xPos + 2.5, y + 0.5); // Down stroke
-            docPdf.line(xPos + 2.5, y + 0.5, xPos + 4.5, y - 2.5); // Up stroke
-            
-            // Text Color for label (optional, keep black)
-            docPdf.setTextColor(0, 0, 0); 
-        } else {
-             docPdf.setTextColor(100, 100, 100); 
-        }
-        
-        docPdf.setFontSize(10);
-        docPdf.setTextColor(0,0,0);
-        docPdf.text(item.label, xPos + 8, y); 
+      // --- QR CODE ON PAGE 1 ---
+      let qrY = 230; 
+      docPdf.addImage(qrDataUrl, 'JPEG', 160, qrY, 30, 30);
+      docPdf.setFontSize(8);
+      docPdf.setTextColor(150, 150, 150);
+      docPdf.text("Scan to Verify Originality", 175, qrY+35, { align: 'center' });
+      docPdf.text(`ID: ${docId.substring(0, 15)}...`, 175, qrY+39, { align: 'center' });
 
-        if (i % 2 === 1 || i === profileItems.length - 1) {
-            y += 8;
-        }
-    }
+      // --- PAGE 2: CHECKLIST (FIXED LAYOUT) ---
+      docPdf.addPage();
+      docPdf.setFillColor(255, 255, 255);
+      docPdf.setTextColor(0, 0, 0);
+      docPdf.setFontSize(14);
+      docPdf.setFont("helvetica", "bold");
+      docPdf.text("Detailed Component Checklist", 15, 20);
 
-    // Draw PB Matrix - MANUAL TABLE
-    y += 10;
-    docPdf.setFont("helvetica", "bold");
-    docPdf.text("2. Module & Production Components (Per PB)", 15, y);
-    y += 8;
+      y = 35;
+      docPdf.setFontSize(10);
+      docPdf.setFont("helvetica", "bold");
+      docPdf.text("1. Profile Components", 15, y);
+      y += 10; // Extra spacing after header
+      docPdf.setFont("helvetica", "normal");
+      
+      // Draw Profile Items - FIXED 2 COLUMN LOOP
+      const profileItems = COMPONENT_GROUPS.profile.items;
+      for (let i = 0; i < profileItems.length; i++) {
+          const item = profileItems[i];
+          const isChecked = selectedSet.has(item.id);
+          const xPos = (i % 2 === 0) ? 15 : 110; 
+          
+          // Checkbox container
+          docPdf.setDrawColor(200);
+          docPdf.setFillColor(255, 255, 255);
+          docPdf.rect(xPos, y-3.5, 5, 5, 'FD'); // Empty box background
 
-    // Table Config
-    const startX = 15;
-    const totalWidth = 180;
-    const nameColWidth = 60;
-    const pbColWidth = (totalWidth - nameColWidth) / data.numPB;
-    const rowHeight = 7;
-    
-    // Header
-    docPdf.setFillColor(153, 27, 27); // Red Header
-    docPdf.rect(startX, y, totalWidth, rowHeight, 'F');
-    docPdf.setTextColor(255, 255, 255);
-    docPdf.setFontSize(8);
-    docPdf.text("Component", startX + 2, y + 5);
-    
-    for(let i=1; i<=data.numPB; i++) {
-        const cx = startX + nameColWidth + ((i-1)*pbColWidth);
-        docPdf.text(i.toString(), cx + (pbColWidth/2), y + 5, { align: 'center' });
-    }
-    y += rowHeight;
+          if(isChecked) {
+              // Draw Green Checkmark
+              docPdf.setDrawColor(0, 153, 51); // Green
+              docPdf.setLineWidth(1);
+              // Tick coordinates relative to box
+              docPdf.line(xPos + 1, y - 1, xPos + 2.5, y + 0.5); // Down stroke
+              docPdf.line(xPos + 2.5, y + 0.5, xPos + 4.5, y - 2.5); // Up stroke
+              
+              // Text Color for label (optional, keep black)
+              docPdf.setTextColor(0, 0, 0); 
+          } else {
+               docPdf.setTextColor(100, 100, 100); 
+          }
+          
+          docPdf.setFontSize(10);
+          docPdf.setTextColor(0,0,0);
+          docPdf.text(item.label, xPos + 8, y); 
 
-    // Rows
-    docPdf.setTextColor(0, 0, 0);
-    docPdf.setFont("helvetica", "normal");
-    
-    const allPbItems = [...COMPONENT_GROUPS.module.items, ...COMPONENT_GROUPS.production.items];
-    
-    allPbItems.forEach((item, index) => {
-        // Alternating row color
-        if(index % 2 === 0) docPdf.setFillColor(245, 245, 245);
-        else docPdf.setFillColor(255, 255, 255);
-        
-        docPdf.rect(startX, y, totalWidth, rowHeight, 'F');
-        
-        // Label
-        docPdf.text(item.label, startX + 2, y + 5);
-        
-        // Cells
-        for(let i=1; i<=data.numPB; i++) {
-            const key = `pb_${i}_${item.id}`;
-            const cx = startX + nameColWidth + ((i-1)*pbColWidth);
-            
-            if(selectedSet.has(key)) {
-                // Draw Green Check
-                docPdf.setDrawColor(0, 153, 51);
-                docPdf.setLineWidth(0.8);
-                const tx = cx + (pbColWidth/2) - 1.5;
-                const ty = y + 4;
-                docPdf.line(tx, ty, tx + 1.5, ty + 1.5);
-                docPdf.line(tx + 1.5, ty + 1.5, tx + 4, ty - 2.5);
-            } else {
-                // Draw small dot or dash
-                docPdf.setFillColor(200);
-                docPdf.circle(cx + (pbColWidth/2), y + 3.5, 0.5, 'F');
-            }
-        }
-        y += rowHeight;
-    });
-    
-    // Final Border
-    docPdf.setDrawColor(200);
-    docPdf.rect(startX, y - (allPbItems.length * rowHeight) - 7, totalWidth, (allPbItems.length * rowHeight) + 7, 'S');
+          if (i % 2 === 1 || i === profileItems.length - 1) {
+              y += 8;
+          }
+      }
 
-    if (preview) {
-      window.open(docPdf.output('bloburl'), '_blank');
-    } else {
-      docPdf.save(`CeLOE_Checklist_${data.courseName.replace(/\s+/g,'_')}.pdf`);
+      // Draw PB Matrix - MANUAL TABLE
+      y += 10;
+      docPdf.setFont("helvetica", "bold");
+      docPdf.text("2. Module & Production Components (Per PB)", 15, y);
+      y += 8;
+
+      // Table Config
+      const startX = 15;
+      const totalWidth = 180;
+      const nameColWidth = 60;
+      const pbColWidth = (totalWidth - nameColWidth) / data.numPB;
+      const rowHeight = 7;
+      
+      // Header
+      docPdf.setFillColor(153, 27, 27); // Red Header
+      docPdf.rect(startX, y, totalWidth, rowHeight, 'F');
+      docPdf.setTextColor(255, 255, 255);
+      docPdf.setFontSize(8);
+      docPdf.text("Component", startX + 2, y + 5);
+      
+      for(let i=1; i<=data.numPB; i++) {
+          const cx = startX + nameColWidth + ((i-1)*pbColWidth);
+          docPdf.text(i.toString(), cx + (pbColWidth/2), y + 5, { align: 'center' });
+      }
+      y += rowHeight;
+
+      // Rows
+      docPdf.setTextColor(0, 0, 0);
+      docPdf.setFont("helvetica", "normal");
+      
+      const allPbItems = [...COMPONENT_GROUPS.module.items, ...COMPONENT_GROUPS.production.items];
+      
+      allPbItems.forEach((item, index) => {
+          // Alternating row color
+          if(index % 2 === 0) docPdf.setFillColor(245, 245, 245);
+          else docPdf.setFillColor(255, 255, 255);
+          
+          docPdf.rect(startX, y, totalWidth, rowHeight, 'F');
+          
+          // Label
+          docPdf.text(item.label, startX + 2, y + 5);
+          
+          // Cells
+          for(let i=1; i<=data.numPB; i++) {
+              const key = `pb_${i}_${item.id}`;
+              const cx = startX + nameColWidth + ((i-1)*pbColWidth);
+              
+              if(selectedSet.has(key)) {
+                  // Draw Green Check
+                  docPdf.setDrawColor(0, 153, 51);
+                  docPdf.setLineWidth(0.8);
+                  const tx = cx + (pbColWidth/2) - 1.5;
+                  const ty = y + 4;
+                  docPdf.line(tx, ty, tx + 1.5, ty + 1.5);
+                  docPdf.line(tx + 1.5, ty + 1.5, tx + 4, ty - 2.5);
+              } else {
+                  // Draw small dot or dash
+                  docPdf.setFillColor(200);
+                  docPdf.circle(cx + (pbColWidth/2), y + 3.5, 0.5, 'F');
+              }
+          }
+          y += rowHeight;
+      });
+      
+      // Final Border
+      docPdf.setDrawColor(200);
+      docPdf.rect(startX, y - (allPbItems.length * rowHeight) - 7, totalWidth, (allPbItems.length * rowHeight) + 7, 'S');
+
+      if (preview) {
+        window.open(docPdf.output('bloburl'), '_blank');
+      } else {
+        docPdf.save(`CeLOE_Checklist_${data.courseName.replace(/\s+/g,'_')}.pdf`);
+      }
+    } catch (err) {
+      alert("Error generating PDF: " + err.message);
     }
   };
 
